@@ -1,5 +1,22 @@
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'unknown'
 
+export type ImportSourceType = 'directory' | 'zip' | 'file' | 'clipboard'
+
+export interface ImportSource {
+  id: string
+  type: ImportSourceType
+  name: string
+  path?: string
+  files: LogFile[]
+}
+
+export interface ComparePair {
+  id: string
+  entryAId: string
+  entryBId: string
+  createdAt: number
+}
+
 export interface LogEntry {
   id: string
   timestamp: number
@@ -24,6 +41,8 @@ export interface LogFile {
   entries: LogEntry[]
   parsed: boolean
   encoding?: string
+  entryCount?: number
+  timeRange?: { start: number; end: number }
 }
 
 export interface LogPackage {
@@ -36,6 +55,9 @@ export interface LogPackage {
   files: LogFile[]
   description?: string
   tags: string[]
+  sources?: ImportSource[]
+  comparePairs?: ComparePair[]
+  currentCompareId?: string | null
 }
 
 export interface FilterOptions {
@@ -48,6 +70,8 @@ export interface FilterOptions {
   startTime?: number
   endTime?: number
   caseSensitive: boolean
+  onlyStarred?: boolean
+  tagFilter?: string[]
 }
 
 export interface AggregatedError {

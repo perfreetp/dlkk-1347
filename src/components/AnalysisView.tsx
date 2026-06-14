@@ -21,15 +21,41 @@ export default function AnalysisView() {
     addTag,
     removeTag,
     setViewMode,
+    addComparePair,
+    removeComparePair,
+    setCurrentCompare,
   } = useLogStore()
-  
+
   const [rightPanel, setRightPanel] = useState<RightPanel>('detail')
   const [showContext, setShowContext] = useState(false)
   const [contextSize, setContextSize] = useState(10)
-  const [compareEntryId, setCompareEntryId] = useState<string | null>(null)
   const [compareMode, setCompareMode] = useState<'idle' | 'selectA' | 'selectB'>('idle')
-  
+  const [compareEntryId, setCompareEntryId] = useState<string | null>(null)
+  const [allTags, setAllTags] = useState<string[]>([])
+
   const logContainerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const tagSet = new Set<string>()
+    for (const file of currentPkg?.files || []) {
+      for (const entry of file.entries) {
+        for (const tag of entry.tags) tagSet.add(tag)
+      }
+    }
+    setAllTags(Array.from(tagSet).sort())
+  }, [currentPkg])
+
+  useEffect(() => {
+    if (rightPanel === 'compare' && currentPkg?.currentCompareId) {
+      const pair = (currentPkg.comparePairs || []).find((p) => p.id === currentPkg.currentCompareId)
+      if (pair) {
+        setSelectedEntry(pair.entryAId)
+        setCompareEntryId(pair.entryBId)
+        setCompareMode('idle')
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rightPanel, currentPkg?.id])
   
   const filteredEntries = useMemo(() => {
     return filterLogs(allEntries, filterOptions)
@@ -87,6 +113,9 @@ export default function AnalysisView() {
         if (selectedEntryId !== entry.id) {
           setCompareEntryId(entry.id)
           setCompareMode('idle')
+          if (currentPkg) {
+            addComparePair(currentPkg.id, selectedEntryId!, entry.id)
+          }
         }
       }
     } else {
@@ -106,6 +135,9 @@ export default function AnalysisView() {
   const resetCompare = () => {
     setCompareEntryId(null)
     setCompareMode('selectA')
+    if (currentPkg) {
+      setCurrentCompare(currentPkg.id, null)
+    }
   }
   
   const swapCompare = () => {
@@ -113,7 +145,74 @@ export default function AnalysisView() {
       const temp = selectedEntryId
       setSelectedEntry(compareEntryId)
       setCompareEntryId(temp)
+      if (currentPkg?.currentCompareId) {
+        const pair = (currentPkg.comparePairs || []).find((p) => p.id === currentPkg.currentCompareId)
+        if (pair) {
+          addComparePair(currentPkg.id, compareEntryId, selectedEntryId)
+          removeComparePair(currentPkg.id, pair.id)
+        }
+      }
     }
+  }
+
+  const goToPrevPair = () => {
+    if (!currentPkg) return
+    const pairs = currentPkg.comparePairs || []
+    if (!currentPkg.currentCompareId || pairs.length === 0) return
+    const idx = pairs.findIndex((p) => p.id === currentPkg.currentCompareId)
+    if (idx > 0) {
+      const prev = pairs[idx - 1]
+      setCurrentCompare(currentPkg.id, prev.id)
+      setSelectedEntry(prev.entryAId)
+      setCompareEntryId(prev.entryBId)
+    }
+  }
+
+  const goToNextPair = () => {
+    if (!currentPkg) return
+    const pairs = currentPkg.comparePairs || []
+    if (!currentPkg.currentCompareId || pairs.length === 0) return
+    const idx = pairs.findIndex((p) => p.id === currentPkg.currentCompareId)
+    if (idx >= 0 && idx < pairs.length - 1) {
+      const next = pairs[idx + 1]
+      setCurrentCompare(currentPkg.id, next.id)
+      setSelectedEntry(next.entryAId)
+      setCompareEntryId(next.entryBId)
+    }
+  }
+
+  const goToPrevAdjacent = () => {
+    if (!selectedEntryId || !compareEntryId) return
+    const idxA = allEntries.findIndex((e) => e.id === selectedEntryId)
+    if (idxA > 0) {
+      const newA = allEntries[idxA - 1]
+      const newB = allEntries[idxA]
+      setSelectedEntry(newA.id)
+      setCompareEntryId(newB.id)
+      if (currentPkg) {
+        addComparePair(currentPkg.id, newA.id, newB.id)
+      }
+    }
+  }
+
+  const goToNextAdjacent = () => {
+    if (!selectedEntryId || !compareEntryId) return
+    const idxB = allEntries.findIndex((e) => e.id === compareEntryId)
+    if (idxB >= 0 && idxB < allEntries.length - 1) {
+      const newA = allEntries[idxB]
+      const newB = allEntries[idxB + 1]
+      setSelectedEntry(newA.id)
+      setCompareEntryId(newB.id)
+      if (currentPkg) {
+        addComparePair(currentPkg.id, newA.id, newB.id)
+      }
+    }
+  }
+
+  const toggleTagFilter = (tag: string) => {
+    const current = filterOptions.tagFilter || []
+    const next = current.includes(tag) ? current.filter((t) => t !== tag) : [...current, tag]
+    updateFilter({ tagFilter: next })
   }
   
   const handleScrollToEntry = (entryId: string) => {
@@ -284,6 +383,39 @@ export default function AnalysisView() {
           ))}
           
           <div className="w-px h-5 bg-gray-300 dark:bg-gray-600 mx-2"></div>
+
+          <button
+            onClick={() => updateFilter({ onlyStarred: !filterOptions.onlyStarred })}
+            className={`tag cursor-pointer transition-colors ${
+              filterOptions.onlyStarred
+                ? 'tag-warn ring-2 ring-offset-1 ring-amber-400'
+                : 'tag-debug opacity-50 hover:opacity-100'
+            }`}
+          >
+            ⭐ 仅收藏
+          </button>
+
+          {allTags.length > 0 && (
+            <>
+              <div className="w-px h-5 bg-gray-300 dark:bg-gray-600 mx-2"></div>
+              <span className="text-sm text-gray-500 dark:text-gray-400">标签：</span>
+              {allTags.slice(0, 8).map((tag) => (
+                <button
+                  key={tag}
+                  onClick={() => toggleTagFilter(tag)}
+                  className={`tag cursor-pointer transition-colors ${
+                    (filterOptions.tagFilter || []).includes(tag)
+                      ? 'tag-info ring-2 ring-offset-1 ring-blue-400'
+                      : 'tag-debug opacity-50 hover:opacity-100'
+                  }`}
+                >
+                  #{tag}
+                </button>
+              ))}
+            </>
+          )}
+          
+          <div className="w-px h-5 bg-gray-300 dark:bg-gray-600 mx-2"></div>
           
           <span className="text-sm text-gray-500 dark:text-gray-400">显示：</span>
           <span className="text-sm text-gray-600 dark:text-gray-400">
@@ -408,7 +540,30 @@ export default function AnalysisView() {
                 onSelectNext={(entryId) => {
                   setCompareEntryId(entryId)
                   setCompareMode('idle')
+                  if (currentPkg && selectedEntryId) {
+                    addComparePair(currentPkg.id, selectedEntryId, entryId)
+                  }
                 }}
+                onPrevPair={goToPrevPair}
+                onNextPair={goToNextPair}
+                onPrevAdjacent={goToPrevAdjacent}
+                onNextAdjacent={goToNextAdjacent}
+                pairs={currentPkg?.comparePairs || []}
+                currentPairId={currentPkg?.currentCompareId || null}
+                onSelectPair={(pairId) => {
+                  if (!currentPkg) return
+                  const pair = (currentPkg.comparePairs || []).find((p) => p.id === pairId)
+                  if (pair) {
+                    setCurrentCompare(currentPkg.id, pairId)
+                    setSelectedEntry(pair.entryAId)
+                    setCompareEntryId(pair.entryBId)
+                    setCompareMode('idle')
+                  }
+                }}
+                onDeletePair={(pairId) => {
+                  if (currentPkg) removeComparePair(currentPkg.id, pairId)
+                }}
+                allEntries={allEntries}
               />
             )}
           </div>
@@ -425,6 +580,15 @@ function ComparePanel({
   onReset,
   onSwap,
   onSelectNext,
+  onPrevPair,
+  onNextPair,
+  onPrevAdjacent,
+  onNextAdjacent,
+  pairs,
+  currentPairId,
+  onSelectPair,
+  onDeletePair,
+  allEntries,
 }: {
   entry1: LogEntry | null
   entry2: LogEntry | null
@@ -432,6 +596,15 @@ function ComparePanel({
   onReset: () => void
   onSwap: () => void
   onSelectNext: (entryId: string) => void
+  onPrevPair: () => void
+  onNextPair: () => void
+  onPrevAdjacent: () => void
+  onNextAdjacent: () => void
+  pairs: { id: string; entryAId: string; entryBId: string; createdAt: number }[]
+  currentPairId: string | null
+  onSelectPair: (pairId: string) => void
+  onDeletePair: (pairId: string) => void
+  allEntries: LogEntry[]
 }) {
   if (!entry1 && compareMode === 'selectA') {
     return (
@@ -446,7 +619,7 @@ function ComparePanel({
       </div>
     )
   }
-  
+
   if (entry1 && compareMode === 'selectB' && !entry2) {
     return (
       <div className="p-4 space-y-4">
@@ -459,22 +632,22 @@ function ComparePanel({
             {new Date(entry1.timestamp).toLocaleString()}
           </div>
         </div>
-        
+
         <div className="text-center">
           <div className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500">
             ↓
           </div>
         </div>
-        
+
         <div className="text-center">
           <p className="text-sm text-gray-600 dark:text-gray-400">
             请在左侧列表中点击选择 <span className="font-medium text-blue-600 dark:text-blue-400">日志 B</span>
           </p>
           <p className="text-xs text-gray-400 mt-1">
-            选择后将自动进行对比
+            选择后将自动进行对比并保存
           </p>
         </div>
-        
+
         <button
           onClick={onReset}
           className="btn-secondary w-full text-sm"
@@ -484,7 +657,7 @@ function ComparePanel({
       </div>
     )
   }
-  
+
   if (!entry1 || !entry2) {
     return (
       <div className="p-6 text-center">
@@ -498,10 +671,14 @@ function ComparePanel({
       </div>
     )
   }
-  
+
   const timeDiff = entry2.timestamp - entry1.timestamp
   const levelDiff = entry1.level !== entry2.level
-  
+  const currentIdx = pairs.findIndex((p) => p.id === currentPairId)
+
+  const summarize = (e: LogEntry) =>
+    `[${e.level.toUpperCase()}] ${e.message.split('\n')[0].substring(0, 30)}`
+
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center justify-between">
@@ -524,7 +701,66 @@ function ComparePanel({
           </button>
         </div>
       </div>
-      
+
+      <div className="flex items-center justify-between gap-2 bg-gray-50 dark:bg-gray-700/30 rounded-lg p-2">
+        <span className="text-xs text-gray-500">相邻导航</span>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onPrevAdjacent}
+            className="btn-secondary text-xs px-2 py-1"
+            title="上一对相邻日志"
+          >
+            ◀ 上一对
+          </button>
+          <button
+            onClick={onNextAdjacent}
+            className="btn-secondary text-xs px-2 py-1"
+            title="下一对相邻日志"
+          >
+            下一对 ▶
+          </button>
+        </div>
+      </div>
+
+      {pairs.length > 0 && (
+        <div className="flex items-center justify-between gap-2 bg-gray-50 dark:bg-gray-700/30 rounded-lg p-2">
+          <span className="text-xs text-gray-500">
+            历史对比 {currentIdx >= 0 ? `${currentIdx + 1}/${pairs.length}` : `共 ${pairs.length} 组`}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onPrevPair}
+              disabled={currentIdx <= 0}
+              className="btn-secondary text-xs px-2 py-1 disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              ◀
+            </button>
+            <select
+              value={currentPairId || ''}
+              onChange={(e) => onSelectPair(e.target.value)}
+              className="text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 max-w-[120px]"
+            >
+              {pairs.map((p, i) => {
+                const a = allEntries.find((e) => e.id === p.entryAId)
+                const b = allEntries.find((e) => e.id === p.entryBId)
+                return (
+                  <option key={p.id} value={p.id}>
+                    #{i + 1} {a ? summarize(a) : '?'}
+                  </option>
+                )
+              })}
+            </select>
+            <button
+              onClick={onNextPair}
+              disabled={currentIdx < 0 || currentIdx >= pairs.length - 1}
+              className="btn-secondary text-xs px-2 py-1 disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              ▶
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-3">
         <div className={`card p-3 border-l-4 border-l-blue-500`}>
           <div className="flex items-center gap-2 mb-1">
@@ -534,6 +770,10 @@ function ComparePanel({
             <span className={`text-xs tag-${entry1.level}`}>
               {entry1.level.toUpperCase()}
             </span>
+            {entry1.isStarred && <span className="text-amber-500 text-xs">⭐</span>}
+            {entry1.tags.length > 0 && entry1.tags.slice(0, 3).map((t) => (
+              <span key={t} className="tag tag-info text-xs">#{t}</span>
+            ))}
           </div>
           <div className="text-sm text-gray-800 dark:text-gray-200 line-clamp-2">
             {entry1.message.split('\n')[0]}
@@ -547,7 +787,7 @@ function ComparePanel({
             </div>
           )}
         </div>
-        
+
         <div className="flex items-center justify-center gap-4 py-1">
           <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700"></div>
           <span className="text-xs text-gray-400">
@@ -555,7 +795,7 @@ function ComparePanel({
           </span>
           <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700"></div>
         </div>
-        
+
         <div className={`card p-3 border-l-4 border-l-green-500`}>
           <div className="flex items-center gap-2 mb-1">
             <span className="text-xs font-medium text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/30 px-2 py-0.5 rounded">
@@ -564,6 +804,10 @@ function ComparePanel({
             <span className={`text-xs tag-${entry2.level}`}>
               {entry2.level.toUpperCase()}
             </span>
+            {entry2.isStarred && <span className="text-amber-500 text-xs">⭐</span>}
+            {entry2.tags.length > 0 && entry2.tags.slice(0, 3).map((t) => (
+              <span key={t} className="tag tag-info text-xs">#{t}</span>
+            ))}
           </div>
           <div className="text-sm text-gray-800 dark:text-gray-200 line-clamp-2">
             {entry2.message.split('\n')[0]}
@@ -578,7 +822,7 @@ function ComparePanel({
           )}
         </div>
       </div>
-      
+
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-gray-50 dark:bg-gray-700/50 rounded p-2 text-center">
           <div className="text-xs text-gray-500 dark:text-gray-400">级别变化</div>
@@ -593,7 +837,7 @@ function ComparePanel({
           </div>
         </div>
       </div>
-      
+
       <div>
         <div className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
           📝 消息差异
@@ -602,18 +846,36 @@ function ComparePanel({
           {compareMessages(entry1.message, entry2.message)}
         </div>
       </div>
-      
-      <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-          💡 提示：点击其他日志可替换日志 B
-        </p>
-        <button
-          onClick={onReset}
-          className="btn-secondary w-full text-sm"
-        >
-          重新选择两条日志
-        </button>
-      </div>
+
+      {pairs.length > 0 && currentPairId && (
+        <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              💡 历史对比（会保存在当前日志包中）
+            </span>
+            <button
+              onClick={() => onDeletePair(currentPairId)}
+              className="text-xs text-red-500 hover:text-red-600"
+            >
+              删除此组
+            </button>
+          </div>
+        </div>
+      )}
+
+      {compareMode === 'idle' && (
+        <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+            💡 提示：点击其他日志可替换日志 B
+          </p>
+          <button
+            onClick={onReset}
+            className="btn-secondary w-full text-sm"
+          >
+            重新选择两条日志
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -37,7 +37,6 @@ export function filterLogs(entries: LogEntry[], options: FilterOptions): LogEntr
         const regex = new RegExp(keyword, flags)
         filtered = filtered.filter(e => regex.test(e.raw))
       } catch {
-        // invalid regex, fall back to plain text
         filtered = filtered.filter(e => 
           (options.caseSensitive ? e.raw : e.raw.toLowerCase()).includes(
             options.caseSensitive ? keyword : keyword.toLowerCase()
@@ -51,6 +50,16 @@ export function filterLogs(entries: LogEntry[], options: FilterOptions): LogEntr
         )
       )
     }
+  }
+
+  if (options.onlyStarred) {
+    filtered = filtered.filter(e => e.isStarred)
+  }
+
+  if (options.tagFilter && options.tagFilter.length > 0) {
+    filtered = filtered.filter(e =>
+      options.tagFilter!.some(tag => e.tags.includes(tag))
+    )
   }
   
   return filtered
