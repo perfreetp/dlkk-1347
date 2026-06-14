@@ -1,19 +1,23 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { useLogStore } from '../store/useLogStore'
-import { parseLogContent, detectTimeFormat, detectLogLevel, extractThread, extractErrorCode } from '../utils/logParser'
+import { parseLogContent, detectTimeFormat } from '../utils/logParser'
 import type { LogPackage, LogFile, LogEntry } from '../types'
 import { formatFileSize } from '../utils/exportUtils'
+import JSZip from 'jszip'
 
 type ImportTab = 'drag' | 'folder' | 'clipboard'
 
 interface PreviewFile {
   name: string
+  path: string
   size: number
   content?: string
   entries?: LogEntry[]
   parsed: boolean
   timeFormat?: string
   levelCounts?: Record<string, number>
+  isFromZip?: boolean
+  zipName?: string
 }
 
 export default function ImportView() {
@@ -28,64 +32,231 @@ export default function ImportView() {
   const [clipboardText, setClipboardText] = useState('')
   const [isImporting, setIsImporting] = useState(false)
   const [importProgress, setImportProgress] = useState(0)
+  const [processingText, setProcessingText] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
   
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
+    e.stopPropagation()
     setIsDragOver(true)
   }, [])
   
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault()
+    e.stopPropagation()
     setIsDragOver(false)
   }, [])
   
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
+    e.stopPropagation()
     setIsDragOver(false)
     
-    const files = e.dataTransfer.files
-    await processFiles(files)
+    const items = e.dataTransfer.items
+    if (items && items.length > 0) {
+      await processDroppedItems(items)
+    } else {
+      const files = e.dataTransfer.files
+      await processFileList(files)
+    }
   }, [])
   
-  const processFiles = async (fileList: FileList) => {
-    const files: PreviewFile[] = []
+  const processDroppedItems = async (items: DataTransferItemList) => {
+    const allFiles: PreviewFile[] = []
     
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i]
-      
-      if (file.type === 'application/zip' || file.name.endsWith('.zip')) {
-        files.push({
-          name: file.name,
-          size: file.size,
-          parsed: false,
-        })
-      } else if (file.type === '' || file.name.endsWith('.log') || file.name.endsWith('.txt')) {
-        try {
-          const content = await readFileAsText(file)
-          const entries = parseLogContent(content, file.name)
-          const timePattern = detectTimeFormat(content)
-          const levelCounts = getLevelCounts(entries)
-          
-          files.push({
-            name: file.name,
-            size: file.size,
-            content,
-            entries,
-            parsed: true,
-            timeFormat: timePattern?.name,
-            levelCounts,
-          })
-        } catch {
-          files.push({
-            name: file.name,
-            size: file.size,
-            parsed: false,
-          })
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      if (item.kind === 'file') {
+        const entry = (item as DataTransferItem & { webkitGetAsEntry?: () => FileSystemEntry | null }).webkitGetAsEntry?.()
+        
+        if (entry) {
+          if (entry.isDirectory) {
+            setProcessingText(`正在扫描文件夹: ${entry.name}`)
+            const dirFiles = await readDirectoryRecursive(entry as FileSystemDirectoryEntry)
+            allFiles.push(...dirFiles)
+            setProcessingText('')
+          } else {
+            const file = item.getAsFile()
+            if (file) {
+              const singleFiles = await processSingleFile(file, file.name)
+              allFiles.push(...singleFiles)
+            }
+          }
         }
       }
     }
     
-    setPreviewFiles((prev) => [...prev, ...files])
+    if (allFiles.length > 0) {
+      setPreviewFiles((prev) => [...prev, ...allFiles])
+    }
+  }
+  
+  const readDirectoryRecursive = (
+    dirEntry: FileSystemDirectoryEntry,
+    path: string = ''
+  ): Promise<PreviewFile[]> => {
+    return new Promise((resolve) => {
+      const reader = dirEntry.createReader()
+      const results: PreviewFile[] = []
+      
+      const readEntries = () => {
+        reader.readEntries(async (entries) => {
+          if (entries.length === 0) {
+            resolve(results)
+            return
+          }
+          
+          for (const entry of entries) {
+            if (entry.isFile) {
+              const isLogFile = entry.name.endsWith('.log') || 
+                               entry.name.endsWith('.txt') || 
+                               entry.name.endsWith('.zip')
+              
+              if (isLogFile) {
+                const fileEntry = entry as FileSystemFileEntry
+                try {
+                  const file = await new Promise<File>((res, rej) => {
+                    fileEntry.file(res, rej)
+                  })
+                  
+                  const filePath = path ? `${path}/${entry.name}` : entry.name
+                  const processed = await processSingleFile(file, filePath)
+                  results.push(...processed)
+                } catch {
+                  // skip
+                }
+              }
+            } else if (entry.isDirectory) {
+              const subDir = entry as FileSystemDirectoryEntry
+              const subPath = path ? `${path}/${entry.name}` : entry.name
+              const subFiles = await readDirectoryRecursive(subDir, subPath)
+              results.push(...subFiles)
+            }
+          }
+          
+          readEntries()
+        }, () => {
+          resolve(results)
+        })
+      }
+      
+      readEntries()
+    })
+  }
+  
+  const processFileList = async (fileList: FileList) => {
+    const files: PreviewFile[] = []
+    
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i]
+      const processed = await processSingleFile(file, file.name)
+      files.push(...processed)
+    }
+    
+    if (files.length > 0) {
+      setPreviewFiles((prev) => [...prev, ...files])
+    }
+  }
+  
+  const processSingleFile = async (file: File, displayName: string): Promise<PreviewFile[]> => {
+    const results: PreviewFile[] = []
+    
+    if (file.name.endsWith('.zip')) {
+      try {
+        setProcessingText(`正在解析压缩包: ${file.name}`)
+        const zipFiles = await processZipFile(file, displayName)
+        results.push(...zipFiles)
+        setProcessingText('')
+      } catch {
+        results.push({
+          name: displayName,
+          path: displayName,
+          size: file.size,
+          parsed: false,
+        })
+        setProcessingText('')
+      }
+    } else if (file.name.endsWith('.log') || file.name.endsWith('.txt') || file.type === '') {
+      try {
+        const content = await readFileAsText(file)
+        const entries = parseLogContent(content, displayName)
+        const timePattern = detectTimeFormat(content)
+        const levelCounts = getLevelCounts(entries)
+        
+        results.push({
+          name: displayName,
+          path: displayName,
+          size: file.size,
+          content,
+          entries,
+          parsed: true,
+          timeFormat: timePattern?.name,
+          levelCounts,
+        })
+      } catch {
+        results.push({
+          name: displayName,
+          path: displayName,
+          size: file.size,
+          parsed: false,
+        })
+      }
+    }
+    
+    return results
+  }
+  
+  const processZipFile = async (file: File, zipName: string): Promise<PreviewFile[]> => {
+    const results: PreviewFile[] = []
+    
+    try {
+      const zip = await JSZip.loadAsync(file)
+      const fileList: { name: string; content: string; size: number }[] = []
+      
+      const processPromises: Promise<void>[] = []
+      
+      zip.forEach((relativePath, zipEntry) => {
+        if (!zipEntry.dir) {
+          const isLogFile = relativePath.endsWith('.log') || relativePath.endsWith('.txt')
+          
+          if (isLogFile) {
+            const promise = zipEntry.async('string').then((content) => {
+              fileList.push({
+                name: relativePath,
+                content,
+                size: content.length,
+              })
+            })
+            processPromises.push(promise)
+          }
+        }
+      })
+      
+      await Promise.all(processPromises)
+      
+      for (const f of fileList) {
+        const entries = parseLogContent(f.content, f.name)
+        const timePattern = detectTimeFormat(f.content)
+        const levelCounts = getLevelCounts(entries)
+        
+        results.push({
+          name: f.name,
+          path: `${zipName}/${f.name}`,
+          size: f.size,
+          content: f.content,
+          entries,
+          parsed: true,
+          timeFormat: timePattern?.name,
+          levelCounts,
+          isFromZip: true,
+          zipName,
+        })
+      }
+    } catch (error) {
+      console.error('Zip processing error:', error)
+    }
+    
+    return results
   }
   
   const readFileAsText = (file: File): Promise<string> => {
@@ -114,31 +285,81 @@ export default function ImportView() {
         for (const dirPath of paths) {
           const dirFiles = await window.electronAPI.readDirectory(dirPath)
           const logFiles = dirFiles.filter(
-            (f) => !f.isDirectory && (f.name.endsWith('.log') || f.name.endsWith('.txt'))
+            (f) => !f.isDirectory && (f.name.endsWith('.log') || f.name.endsWith('.txt') || f.name.endsWith('.zip'))
           )
           
           for (const file of logFiles) {
-            try {
-              const content = await window.electronAPI.readFile(file.path)
-              const entries = parseLogContent(content, file.name)
-              const timePattern = detectTimeFormat(content)
-              const levelCounts = getLevelCounts(entries)
-              
-              files.push({
-                name: file.name,
-                size: file.size,
-                content,
-                entries,
-                parsed: true,
-                timeFormat: timePattern?.name,
-                levelCounts,
-              })
-            } catch {
-              files.push({
-                name: file.name,
-                size: file.size,
-                parsed: false,
-              })
+            if (file.name.endsWith('.zip')) {
+              // ZIP files via electron - read as arraybuffer and process with JSZip
+              try {
+                setProcessingText(`正在解析压缩包: ${file.name}`)
+                const content = await window.electronAPI.readFile(file.path)
+                const zip = await JSZip.loadAsync(content)
+                const zipFiles: PreviewFile[] = []
+                
+                const processPromises: Promise<void>[] = []
+                
+                zip.forEach((relativePath, zipEntry) => {
+                  if (!zipEntry.dir && (relativePath.endsWith('.log') || relativePath.endsWith('.txt'))) {
+                    const promise = zipEntry.async('string').then((textContent) => {
+                      const entries = parseLogContent(textContent, relativePath)
+                      const timePattern = detectTimeFormat(textContent)
+                      const levelCounts = getLevelCounts(entries)
+                      
+                      zipFiles.push({
+                        name: relativePath,
+                        path: `${file.name}/${relativePath}`,
+                        size: textContent.length,
+                        content: textContent,
+                        entries,
+                        parsed: true,
+                        timeFormat: timePattern?.name,
+                        levelCounts,
+                        isFromZip: true,
+                        zipName: file.name,
+                      })
+                    })
+                    processPromises.push(promise)
+                  }
+                })
+                
+                await Promise.all(processPromises)
+                files.push(...zipFiles)
+                setProcessingText('')
+              } catch {
+                files.push({
+                  name: file.name,
+                  path: file.path,
+                  size: file.size,
+                  parsed: false,
+                })
+                setProcessingText('')
+              }
+            } else {
+              try {
+                const content = await window.electronAPI.readFile(file.path)
+                const entries = parseLogContent(content, file.name)
+                const timePattern = detectTimeFormat(content)
+                const levelCounts = getLevelCounts(entries)
+                
+                files.push({
+                  name: file.name,
+                  path: file.path,
+                  size: file.size,
+                  content,
+                  entries,
+                  parsed: true,
+                  timeFormat: timePattern?.name,
+                  levelCounts,
+                })
+              } catch {
+                files.push({
+                  name: file.name,
+                  path: file.path,
+                  size: file.size,
+                  parsed: false,
+                })
+              }
             }
           }
         }
@@ -148,41 +369,17 @@ export default function ImportView() {
     }
   }
   
-  const handleSelectFiles = async () => {
-    if (window.electronAPI) {
-      const paths = await window.electronAPI.selectFiles()
-      if (paths && paths.length > 0) {
-        const files: PreviewFile[] = []
-        
-        for (const filePath of paths) {
-          const fileName = filePath.split(/[/\\]/).pop() || 'unknown.log'
-          
-          try {
-            const content = await window.electronAPI.readFile(filePath)
-            const entries = parseLogContent(content, fileName)
-            const timePattern = detectTimeFormat(content)
-            const levelCounts = getLevelCounts(entries)
-            
-            files.push({
-              name: fileName,
-              size: content.length,
-              content,
-              entries,
-              parsed: true,
-              timeFormat: timePattern?.name,
-              levelCounts,
-            })
-          } catch {
-            files.push({
-              name: fileName,
-              size: 0,
-              parsed: false,
-            })
-          }
-        }
-        
-        setPreviewFiles((prev) => [...prev, ...files])
-      }
+  const handleSelectFiles = () => {
+    fileInputRef.current?.click()
+  }
+  
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (files && files.length > 0) {
+      await processFileList(files)
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
     }
   }
   
@@ -213,6 +410,7 @@ export default function ImportView() {
     
     const clipboardFile: PreviewFile = {
       name: 'clipboard.log',
+      path: 'clipboard.log',
       size: text.length,
       content: text,
       entries,
@@ -264,11 +462,11 @@ export default function ImportView() {
       for (let i = 0; i < previewFiles.length; i++) {
         const file = previewFiles[i]
         
-        if (file.entries) {
+        if (file.entries && file.parsed) {
           logFiles.push({
             id: `file-${Date.now()}-${i}`,
             name: file.name,
-            path: file.name,
+            path: file.path,
             size: file.size,
             entries: file.entries,
             parsed: true,
@@ -306,8 +504,26 @@ export default function ImportView() {
   const parsedFilesCount = previewFiles.filter((f) => f.parsed).length
   const totalEntries = previewFiles.reduce((sum, f) => sum + (f.entries?.length || 0), 0)
   
+  const zipGroups = previewFiles.reduce((groups, file) => {
+    const groupKey = file.isFromZip && file.zipName ? file.zipName : file.name
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, [])
+    }
+    groups.get(groupKey)!.push(file)
+    return groups
+  }, new Map<string, PreviewFile[]>())
+  
   return (
     <div className="flex flex-col h-full">
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".log,.txt,.zip"
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
+      
       <div className="p-6 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
         <h2 className="text-2xl font-bold text-gray-800 dark:text-white mb-2">导入日志</h2>
         <p className="text-gray-500 dark:text-gray-400">
@@ -354,11 +570,16 @@ export default function ImportView() {
                   >
                     <div className="text-5xl mb-4">📁</div>
                     <p className="text-lg font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      拖拽日志文件或文件夹到这里
+                      拖拽日志文件、文件夹或压缩包到这里
                     </p>
                     <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-                      支持 .log、.txt、.zip 格式
+                      支持 .log、.txt、.zip 格式，支持文件夹递归扫描
                     </p>
+                    {processingText && (
+                      <p className="text-sm text-blue-500 mb-4">
+                        ⏳ {processingText}...
+                      </p>
+                    )}
                     <button
                       onClick={handleSelectFiles}
                       className="btn-secondary"
@@ -384,8 +605,13 @@ export default function ImportView() {
                         📄 选择文件
                       </button>
                     </div>
+                    {processingText && (
+                      <p className="text-sm text-blue-500">
+                        ⏳ {processingText}...
+                      </p>
+                    )}
                     <p className="text-sm text-gray-500 dark:text-gray-400">
-                      选择包含日志文件的文件夹，将自动解析所有 .log 和 .txt 文件
+                      选择包含日志文件的文件夹，将自动解析所有 .log、.txt 和 .zip 文件
                     </p>
                   </div>
                 )}
@@ -436,28 +662,29 @@ export default function ImportView() {
                   </div>
                 </div>
                 
-                <div className="max-h-64 overflow-y-auto">
+                <div className="max-h-96 overflow-y-auto">
                   {previewFiles.map((file, index) => (
                     <div
                       key={index}
                       className="flex items-center justify-between p-3 border-b border-gray-100 dark:border-gray-700 last:border-b-0 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="text-2xl">
-                          {file.name.endsWith('.zip') ? '📦' : '📄'}
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <span className="text-2xl flex-shrink-0">
+                          {file.isFromZip ? '📦' : '📄'}
                         </span>
-                        <div>
-                          <div className="font-medium text-gray-800 dark:text-white">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-gray-800 dark:text-white truncate">
                             {file.name}
                           </div>
-                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                          <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
                             {formatFileSize(file.size)}
                             {file.timeFormat && ` · ${file.timeFormat}`}
+                            {file.isFromZip && file.zipName && ` · 来自 ${file.zipName}`}
                           </div>
                         </div>
                       </div>
                       
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-3 flex-shrink-0 ml-2">
                         {file.parsed && file.levelCounts && (
                           <div className="flex items-center gap-1">
                             {file.levelCounts.error && (
@@ -577,6 +804,10 @@ export default function ImportView() {
                 <li className="flex items-center gap-2">
                   <span className="text-green-500">✓</span>
                   自动解析异常堆栈
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="text-green-500">✓</span>
+                  支持 ZIP 压缩包自动解压
                 </li>
               </ul>
             </div>

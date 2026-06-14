@@ -18,6 +18,8 @@ export default function AnalysisView() {
     selectedEntryId,
     setSelectedEntry,
     toggleStar,
+    addTag,
+    removeTag,
     setViewMode,
   } = useLogStore()
   
@@ -25,6 +27,7 @@ export default function AnalysisView() {
   const [showContext, setShowContext] = useState(false)
   const [contextSize, setContextSize] = useState(10)
   const [compareEntryId, setCompareEntryId] = useState<string | null>(null)
+  const [compareMode, setCompareMode] = useState<'idle' | 'selectA' | 'selectB'>('idle')
   
   const logContainerRef = useRef<HTMLDivElement>(null)
   
@@ -75,9 +78,41 @@ export default function AnalysisView() {
   }
   
   const handleEntryClick = (entry: LogEntry) => {
-    setSelectedEntry(entry.id)
-    if (rightPanel === 'compare' && selectedEntryId && selectedEntryId !== entry.id) {
-      setCompareEntryId(entry.id)
+    if (rightPanel === 'compare') {
+      if (compareMode === 'idle' || compareMode === 'selectA') {
+        setSelectedEntry(entry.id)
+        setCompareEntryId(null)
+        setCompareMode('selectB')
+      } else if (compareMode === 'selectB') {
+        if (selectedEntryId !== entry.id) {
+          setCompareEntryId(entry.id)
+          setCompareMode('idle')
+        }
+      }
+    } else {
+      setSelectedEntry(entry.id)
+    }
+  }
+  
+  const startCompareMode = () => {
+    setRightPanel('compare')
+    if (selectedEntryId) {
+      setCompareMode('selectB')
+    } else {
+      setCompareMode('selectA')
+    }
+  }
+  
+  const resetCompare = () => {
+    setCompareEntryId(null)
+    setCompareMode('selectA')
+  }
+  
+  const swapCompare = () => {
+    if (selectedEntryId && compareEntryId) {
+      const temp = selectedEntryId
+      setSelectedEntry(compareEntryId)
+      setCompareEntryId(temp)
     }
   }
   
@@ -139,11 +174,6 @@ export default function AnalysisView() {
     }
     
     return parts
-  }
-  
-  const startCompareMode = () => {
-    setRightPanel('compare')
-    setCompareEntryId(null)
   }
   
   if (!currentPkg) {
@@ -321,9 +351,12 @@ export default function AnalysisView() {
               <button
                 key={tab.key}
                 onClick={() => {
-                  setRightPanel(tab.key as RightPanel)
-                  if (tab.key !== 'compare') {
+                  if (tab.key === 'compare') {
+                    startCompareMode()
+                  } else {
+                    setRightPanel(tab.key as RightPanel)
                     setCompareEntryId(null)
+                    setCompareMode('idle')
                   }
                 }}
                 className={`flex-1 py-2 text-xs font-medium transition-colors ${
@@ -344,6 +377,8 @@ export default function AnalysisView() {
                 entry={selectedEntry}
                 allEntries={allEntries}
                 onToggleStar={toggleStar}
+                onAddTag={addTag}
+                onRemoveTag={removeTag}
                 onShowContext={() => setShowContext(true)}
                 onScrollToEntry={handleScrollToEntry}
               />
@@ -367,7 +402,13 @@ export default function AnalysisView() {
               <ComparePanel
                 entry1={selectedEntry}
                 entry2={compareEntry}
-                onStartCompare={startCompareMode}
+                compareMode={compareMode}
+                onReset={resetCompare}
+                onSwap={swapCompare}
+                onSelectNext={(entryId) => {
+                  setCompareEntryId(entryId)
+                  setCompareMode('idle')
+                }}
               />
             )}
           </div>
@@ -380,49 +421,79 @@ export default function AnalysisView() {
 function ComparePanel({
   entry1,
   entry2,
-  onStartCompare,
+  compareMode,
+  onReset,
+  onSwap,
+  onSelectNext,
 }: {
   entry1: LogEntry | null
   entry2: LogEntry | null
-  onStartCompare: () => void
+  compareMode: 'idle' | 'selectA' | 'selectB'
+  onReset: () => void
+  onSwap: () => void
+  onSelectNext: (entryId: string) => void
 }) {
-  const [compareMode, setCompareMode] = useState(false)
-  
-  if (!entry1) {
+  if (!entry1 && compareMode === 'selectA') {
     return (
-      <div className="p-4 text-center text-gray-500 dark:text-gray-400">
-        请先选择一条日志
+      <div className="p-6 text-center">
+        <div className="text-4xl mb-3">⚖️</div>
+        <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2">
+          选择日志 A
+        </h4>
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          在左侧日志列表中点击选择第一条日志
+        </p>
       </div>
     )
   }
   
-  if (!entry2 && !compareMode) {
+  if (entry1 && compareMode === 'selectB' && !entry2) {
     return (
-      <div className="p-4">
-        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-          点击另一条日志进行对比，或选择相邻日志进行对比
-        </p>
+      <div className="p-4 space-y-4">
+        <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 border border-blue-200 dark:border-blue-800">
+          <div className="text-xs text-blue-600 dark:text-blue-400 mb-1">📍 日志 A (已选)</div>
+          <div className={`text-sm font-medium log-${entry1.level}`}>
+            [{entry1.level.toUpperCase()}] {entry1.message.split('\n')[0].substring(0, 60)}
+          </div>
+          <div className="text-xs text-blue-500 dark:text-blue-300 mt-1">
+            {new Date(entry1.timestamp).toLocaleString()}
+          </div>
+        </div>
+        
+        <div className="text-center">
+          <div className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500">
+            ↓
+          </div>
+        </div>
+        
+        <div className="text-center">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            请在左侧列表中点击选择 <span className="font-medium text-blue-600 dark:text-blue-400">日志 B</span>
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            选择后将自动进行对比
+          </p>
+        </div>
+        
         <button
-          onClick={() => {
-            setCompareMode(true)
-            onStartCompare()
-          }}
-          className="btn-primary w-full"
+          onClick={onReset}
+          className="btn-secondary w-full text-sm"
         >
-          开始对比模式
+          重新选择
         </button>
       </div>
     )
   }
   
-  if (!entry2) {
+  if (!entry1 || !entry2) {
     return (
-      <div className="p-4">
-        <p className="text-sm text-blue-600 dark:text-blue-400 mb-2">
-          📍 已选日志 1：{entry1.message.substring(0, 30)}...
-        </p>
+      <div className="p-6 text-center">
+        <div className="text-4xl mb-3">⚖️</div>
+        <h4 className="font-medium text-gray-700 dark:text-gray-300 mb-2">
+          日志对比
+        </h4>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          请在左侧列表中点击另一条日志进行对比
+          选择两条日志进行内容对比
         </p>
       </div>
     )
@@ -433,50 +504,115 @@ function ComparePanel({
   
   return (
     <div className="p-4 space-y-4">
-      <div className="card p-3">
-        <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">日志 1</div>
-        <div className={`text-sm font-medium log-${entry1.level}`}>
-          [{entry1.level.toUpperCase()}] {entry1.message.split('\n')[0].substring(0, 50)}
-        </div>
-        <div className="text-xs text-gray-400 mt-1">
-          {new Date(entry1.timestamp).toLocaleString()}
-        </div>
-      </div>
-      
-      <div className="text-center text-sm text-gray-500 dark:text-gray-400">
-        ↕
-      </div>
-      
-      <div className="card p-3">
-        <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">日志 2</div>
-        <div className={`text-sm font-medium log-${entry2.level}`}>
-          [{entry2.level.toUpperCase()}] {entry2.message.split('\n')[0].substring(0, 50)}
-        </div>
-        <div className="text-xs text-gray-400 mt-1">
-          {new Date(entry2.timestamp).toLocaleString()}
+      <div className="flex items-center justify-between">
+        <h4 className="font-medium text-gray-700 dark:text-gray-300">
+          对比结果
+        </h4>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onSwap}
+            className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+            title="交换 A/B"
+          >
+            🔄 交换
+          </button>
+          <button
+            onClick={onReset}
+            className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+          >
+            重新选择
+          </button>
         </div>
       </div>
       
-      <div className="space-y-2">
-        <div className="flex justify-between text-sm">
-          <span className="text-gray-500 dark:text-gray-400">时间差</span>
-          <span className="font-medium">{(timeDiff / 1000).toFixed(3)} 秒</span>
+      <div className="space-y-3">
+        <div className={`card p-3 border-l-4 border-l-blue-500`}>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded">
+              A
+            </span>
+            <span className={`text-xs tag-${entry1.level}`}>
+              {entry1.level.toUpperCase()}
+            </span>
+          </div>
+          <div className="text-sm text-gray-800 dark:text-gray-200 line-clamp-2">
+            {entry1.message.split('\n')[0]}
+          </div>
+          <div className="text-xs text-gray-400 mt-1 font-mono">
+            {new Date(entry1.timestamp).toLocaleString()}
+          </div>
+          {entry1.thread && (
+            <div className="text-xs text-gray-500 mt-1">
+              线程: {entry1.thread}
+            </div>
+          )}
         </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-gray-500 dark:text-gray-400">级别变化</span>
-          <span className={levelDiff ? 'text-amber-500' : 'text-green-500'}>
-            {levelDiff ? '不同' : '相同'}
+        
+        <div className="flex items-center justify-center gap-4 py-1">
+          <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700"></div>
+          <span className="text-xs text-gray-400">
+            ⏱️ 时间差: {(timeDiff / 1000).toFixed(3)} 秒
           </span>
+          <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+        
+        <div className={`card p-3 border-l-4 border-l-green-500`}>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-medium text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/30 px-2 py-0.5 rounded">
+              B
+            </span>
+            <span className={`text-xs tag-${entry2.level}`}>
+              {entry2.level.toUpperCase()}
+            </span>
+          </div>
+          <div className="text-sm text-gray-800 dark:text-gray-200 line-clamp-2">
+            {entry2.message.split('\n')[0]}
+          </div>
+          <div className="text-xs text-gray-400 mt-1 font-mono">
+            {new Date(entry2.timestamp).toLocaleString()}
+          </div>
+          {entry2.thread && (
+            <div className="text-xs text-gray-500 mt-1">
+              线程: {entry2.thread}
+            </div>
+          )}
+        </div>
+      </div>
+      
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-gray-50 dark:bg-gray-700/50 rounded p-2 text-center">
+          <div className="text-xs text-gray-500 dark:text-gray-400">级别变化</div>
+          <div className={`text-sm font-medium mt-1 ${levelDiff ? 'text-amber-500' : 'text-green-500'}`}>
+            {levelDiff ? '不同' : '相同'}
+          </div>
+        </div>
+        <div className="bg-gray-50 dark:bg-gray-700/50 rounded p-2 text-center">
+          <div className="text-xs text-gray-500 dark:text-gray-400">时间差</div>
+          <div className="text-sm font-medium mt-1 text-gray-800 dark:text-gray-200">
+            {(Math.abs(timeDiff) / 1000).toFixed(3)}s
+          </div>
         </div>
       </div>
       
       <div>
         <div className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-          消息差异
+          📝 消息差异
         </div>
-        <div className="bg-gray-50 dark:bg-gray-900 rounded p-2 font-mono text-xs max-h-48 overflow-auto">
+        <div className="bg-gray-50 dark:bg-gray-900 rounded p-3 font-mono text-xs max-h-64 overflow-auto">
           {compareMessages(entry1.message, entry2.message)}
         </div>
+      </div>
+      
+      <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+          💡 提示：点击其他日志可替换日志 B
+        </p>
+        <button
+          onClick={onReset}
+          className="btn-secondary w-full text-sm"
+        >
+          重新选择两条日志
+        </button>
       </div>
     </div>
   )
