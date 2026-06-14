@@ -46,6 +46,31 @@ export default function AnalysisView() {
   }, [currentPkg])
 
   useEffect(() => {
+    if (!currentPkg) return
+    // 打开日志包时恢复上次的对比视图
+    if (currentPkg.currentCompareId) {
+      const pair = (currentPkg.comparePairs || []).find((p) => p.id === currentPkg.currentCompareId)
+      if (pair) {
+        setRightPanel('compare')
+        setCompareMode('idle')
+        setCompareEntryId(pair.entryBId)
+        if (!selectedEntryId) {
+          setSelectedEntry(pair.entryAId)
+        }
+        return
+      }
+    }
+    // 若有全局选中的 entry 则定位过去
+    if (selectedEntryId) {
+      setTimeout(() => {
+        const el = document.getElementById(`log-entry-${selectedEntryId}`)
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 100)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPkg?.id])
+
+  useEffect(() => {
     if (rightPanel === 'compare' && currentPkg?.currentCompareId) {
       const pair = (currentPkg.comparePairs || []).find((p) => p.id === currentPkg.currentCompareId)
       if (pair) {

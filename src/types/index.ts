@@ -8,6 +8,7 @@ export interface ImportSource {
   name: string
   path?: string
   files: LogFile[]
+  remark?: string
 }
 
 export interface ComparePair {

@@ -8,6 +8,7 @@ import type {
   SensitiveRule,
   CaseItem,
   ComparePair,
+  ImportSource,
   LogLevel,
 } from '../types'
 import { DEFAULT_SENSITIVE_RULES } from '../utils/sensitiveMask'
@@ -41,6 +42,9 @@ interface LogState {
   addComparePair: (pkgId: string, entryAId: string, entryBId: string) => string
   removeComparePair: (pkgId: string, pairId: string) => void
   setCurrentCompare: (pkgId: string, pairId: string | null) => void
+
+  openEntry: (pkgId: string, entryId: string, viewMode?: 'analysis') => void
+  updateSource: (pkgId: string, sourceId: string, updates: Partial<ImportSource>) => void
 
   updateSettings: (updates: Partial<AppSettings>) => void
   addSensitiveRule: (rule: Omit<SensitiveRule, 'id'>) => void
@@ -195,6 +199,28 @@ export const useLogStore = create<LogState>()(
         set((state) => ({
           packages: state.packages.map((pkg) =>
             pkg.id === pkgId ? { ...pkg, currentCompareId: pairId, updatedAt: Date.now() } : pkg
+          ),
+        })),
+
+      openEntry: (pkgId, entryId, mode = 'analysis') =>
+        set(() => ({
+          currentPackageId: pkgId,
+          selectedEntryId: entryId,
+          viewMode: mode,
+        }) as Partial<LogState>),
+
+      updateSource: (pkgId, sourceId, updates) =>
+        set((state) => ({
+          packages: state.packages.map((pkg) =>
+            pkg.id === pkgId
+              ? {
+                  ...pkg,
+                  updatedAt: Date.now(),
+                  sources: (pkg.sources || []).map((s) =>
+                    s.id === sourceId ? { ...s, ...updates } : s
+                  ),
+                }
+              : pkg
           ),
         })),
 
