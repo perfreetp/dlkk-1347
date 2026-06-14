@@ -590,15 +590,20 @@ export default function ImportView() {
 
         for (const file of source.files) {
           if (file.entries && file.parsed) {
+            const entriesWithSource = file.entries.map((e) => ({
+              ...e,
+              sourceId: source.id,
+            }))
             const logFile: LogFile = {
               id: `file-${generateId()}`,
               name: file.name,
               path: file.path,
               size: file.size,
-              entries: file.entries,
+              entries: entriesWithSource,
               parsed: true,
-              entryCount: file.entryCount || file.entries.length,
+              entryCount: entriesWithSource.length,
               timeRange: file.timeRange,
+              sourceId: source.id,
             }
             logFiles.push(logFile)
             sourceFiles.push(logFile)

@@ -10,6 +10,7 @@ import type {
   ComparePair,
   ImportSource,
   LogLevel,
+  RightPanelType,
 } from '../types'
 import { DEFAULT_SENSITIVE_RULES } from '../utils/sensitiveMask'
 import { filterLogs } from '../utils/logFilter'
@@ -45,6 +46,10 @@ interface LogState {
 
   openEntry: (pkgId: string, entryId: string, viewMode?: 'analysis') => void
   updateSource: (pkgId: string, sourceId: string, updates: Partial<ImportSource>) => void
+  toggleSourceSelected: (pkgId: string, sourceId: string) => void
+  updateUiState: (pkgId: string, uiState: Partial<NonNullable<LogPackage['uiState']>>) => void
+  resetUiState: (pkgId: string) => void
+  restoreLastCompare: (pkgId: string) => void
 
   updateSettings: (updates: Partial<AppSettings>) => void
   addSensitiveRule: (rule: Omit<SensitiveRule, 'id'>) => void
@@ -66,6 +71,7 @@ const defaultFilterOptions: FilterOptions = {
   caseSensitive: false,
   onlyStarred: false,
   tagFilter: [],
+  sourceFilter: [],
 }
 
 const defaultSettings: AppSettings = {
@@ -203,11 +209,27 @@ export const useLogStore = create<LogState>()(
         })),
 
       openEntry: (pkgId, entryId, mode = 'analysis') =>
-        set(() => ({
+        set((state) => ({
           currentPackageId: pkgId,
           selectedEntryId: entryId,
           viewMode: mode,
-        }) as Partial<LogState>),
+          packages: state.packages.map((pkg) =>
+            pkg.id === pkgId
+              ? {
+                  ...pkg,
+                  updatedAt: Date.now(),
+                  uiState: {
+                    rightPanel: 'detail',
+                    showContext: false,
+                    contextSize: 10,
+                    selectedEntryId: entryId,
+                    compareEntryId: null,
+                    compareMode: 'idle',
+                  },
+                }
+              : pkg
+          ),
+        })),
 
       updateSource: (pkgId, sourceId, updates) =>
         set((state) => ({
@@ -223,6 +245,79 @@ export const useLogStore = create<LogState>()(
               : pkg
           ),
         })),
+
+      toggleSourceSelected: (pkgId, sourceId) =>
+        set((state) => ({
+          packages: state.packages.map((pkg) => {
+            if (pkg.id !== pkgId) return pkg
+            const selected = pkg.selectedSourceIds || []
+            const nextSelected = selected.includes(sourceId)
+              ? selected.filter((id) => id !== sourceId)
+              : [...selected, sourceId]
+            return {
+              ...pkg,
+              updatedAt: Date.now(),
+              selectedSourceIds: nextSelected,
+            }
+          }),
+        })),
+
+      updateUiState: (pkgId, uiState) =>
+        set((state) => ({
+          packages: state.packages.map((pkg) =>
+            pkg.id === pkgId
+              ? {
+                  ...pkg,
+                  updatedAt: Date.now(),
+                  uiState: { ...pkg.uiState, ...uiState },
+                }
+              : pkg
+          ),
+        })),
+
+      resetUiState: (pkgId) =>
+        set((state) => ({
+          packages: state.packages.map((pkg) =>
+            pkg.id === pkgId
+              ? {
+                  ...pkg,
+                  updatedAt: Date.now(),
+                  uiState: undefined,
+                }
+              : pkg
+          ),
+        })),
+
+      restoreLastCompare: (pkgId) =>
+        set((state) => {
+          const pkg = state.packages.find((p) => p.id === pkgId)
+          if (!pkg || !pkg.currentCompareId || !pkg.comparePairs?.length) {
+            return {}
+          }
+          const pair = pkg.comparePairs.find((p) => p.id === pkg.currentCompareId)
+          if (!pair) return {}
+          return {
+            currentPackageId: pkgId,
+            selectedEntryId: pair.entryAId,
+            viewMode: 'analysis',
+            packages: state.packages.map((p) =>
+              p.id === pkgId
+                ? {
+                    ...p,
+                    updatedAt: Date.now(),
+                    uiState: {
+                      rightPanel: 'compare',
+                      showContext: false,
+                      contextSize: 10,
+                      selectedEntryId: pair.entryAId,
+                      compareEntryId: pair.entryBId,
+                      compareMode: 'idle',
+                    },
+                  }
+                : p
+            ),
+          }
+        }),
 
       updateSettings: (updates) =>
         set((state) => ({
@@ -305,7 +400,12 @@ export const useAllEntries = (): LogEntry[] => {
 
   const allEntries: LogEntry[] = []
   for (const file of currentPkg.files) {
-    allEntries.push(...file.entries)
+    for (const entry of file.entries) {
+      allEntries.push({
+        ...entry,
+        sourceId: entry.sourceId || file.sourceId,
+      })
+    }
   }
   return allEntries.sort((a, b) => a.timestamp - b.timestamp)
 }

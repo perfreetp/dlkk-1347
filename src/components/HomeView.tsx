@@ -32,11 +32,12 @@ interface HitEntry {
 }
 
 export default function HomeView() {
-  const { packages, setViewMode, setCurrentPackage, removePackage, openEntry, updateSource, updatePackage } = useLogStore()
+  const { packages, setViewMode, setCurrentPackage, removePackage, openEntry, updateSource, updatePackage, toggleSourceSelected, restoreLastCompare } = useLogStore()
   const [groupBy, setGroupBy] = useState<GroupBy>('project')
   const [searchQuery, setSearchQuery] = useState('')
   const [onlyWithStarred, setOnlyWithStarred] = useState(false)
   const [tagFilter, setTagFilter] = useState<string[]>([])
+  const [sourceFilter, setSourceFilter] = useState<string[]>([])
   const [expandedPkgIds, setExpandedPkgIds] = useState<Set<string>>(new Set())
   const [expandedSourceIds, setExpandedSourceIds] = useState<Set<string>>(new Set())
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null)
@@ -56,9 +57,25 @@ export default function HomeView() {
     return Array.from(set).sort()
   }, [packages])
 
+  const allSources = useMemo(() => {
+    const sources: Array<{ id: string; name: string; type: ImportSourceType; pkgId: string; pkgName: string }> = []
+    for (const pkg of packages) {
+      for (const src of pkg.sources || []) {
+        sources.push({
+          id: src.id,
+          name: src.name,
+          type: src.type,
+          pkgId: pkg.id,
+          pkgName: pkg.name,
+        })
+      }
+    }
+    return sources
+  }, [packages])
+
   // 命中的具体日志条目（用于筛选后直接展开清单）
   const hitEntries = useMemo<HitEntry[]>(() => {
-    if (!onlyWithStarred && tagFilter.length === 0 && !searchQuery.trim()) return []
+    if (!onlyWithStarred && tagFilter.length === 0 && !searchQuery.trim() && sourceFilter.length === 0) return []
     const hits: HitEntry[] = []
     for (const pkg of packages) {
       for (const file of pkg.files) {
@@ -66,6 +83,7 @@ export default function HomeView() {
           let ok = true
           if (onlyWithStarred && !entry.isStarred) ok = false
           if (ok && tagFilter.length > 0 && !tagFilter.some((t) => entry.tags.includes(t))) ok = false
+          if (ok && sourceFilter.length > 0 && !sourceFilter.includes(file.sourceId || '')) ok = false
           if (ok && searchQuery.trim()) {
             const q = searchQuery.toLowerCase()
             if (
@@ -82,7 +100,7 @@ export default function HomeView() {
       }
     }
     return hits.sort((a, b) => b.entry.timestamp - a.entry.timestamp).slice(0, 200)
-  }, [packages, onlyWithStarred, tagFilter, searchQuery])
+  }, [packages, onlyWithStarred, tagFilter, sourceFilter, searchQuery])
 
   const groupedPackages = useMemo(() => {
     let filtered = packages
@@ -115,6 +133,12 @@ export default function HomeView() {
       )
     }
 
+    if (sourceFilter.length > 0) {
+      filtered = filtered.filter((pkg) =>
+        pkg.files.some((f) => sourceFilter.includes(f.sourceId || ''))
+      )
+    }
+
     const groups = new Map<string, LogPackage[]>()
 
     for (const pkg of filtered) {
@@ -143,7 +167,7 @@ export default function HomeView() {
     }
 
     return [...groups.entries()].sort((a, b) => b[0].localeCompare(a[0]))
-  }, [packages, groupBy, searchQuery, onlyWithStarred, tagFilter])
+  }, [packages, groupBy, searchQuery, onlyWithStarred, tagFilter, sourceFilter])
 
   const handleOpenPackage = (pkgId: string) => {
     setCurrentPackage(pkgId)
@@ -167,7 +191,7 @@ export default function HomeView() {
     let maxTime = -Infinity
 
     for (const file of pkg.files) {
-      totalEntries += file.entries.length
+      totalEntries += file.entryCount || file.entries.length
       for (const entry of file.entries) {
         if (entry.level === 'error' || entry.level === 'fatal') errorCount++
         if (entry.level === 'warn') warnCount++
@@ -191,6 +215,12 @@ export default function HomeView() {
   const toggleTagFilter = (tag: string) => {
     setTagFilter((prev) =>
       prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    )
+  }
+
+  const toggleSourceFilter = (sourceId: string) => {
+    setSourceFilter((prev) =>
+      prev.includes(sourceId) ? prev.filter((id) => id !== sourceId) : [...prev, sourceId]
     )
   }
 
@@ -300,6 +330,35 @@ export default function HomeView() {
                   className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 underline"
                 >
                   清除标签
+                </button>
+              )}
+            </>
+          )}
+
+          {allSources.length > 0 && (
+            <>
+              <div className="w-px h-5 bg-gray-300 dark:bg-gray-600"></div>
+              <span className="text-sm text-gray-500 dark:text-gray-400">批次筛选：</span>
+              {allSources.slice(0, 6).map((src) => (
+                <button
+                  key={src.id}
+                  onClick={() => toggleSourceFilter(src.id)}
+                  className={`tag cursor-pointer transition-colors ${
+                    sourceFilter.includes(src.id)
+                      ? 'tag-success ring-2 ring-offset-1 ring-green-400'
+                      : 'tag-debug opacity-60 hover:opacity-100'
+                  }`}
+                  title={`${getSourceLabel(src.type)}: ${src.name} (${src.pkgName})`}
+                >
+                  {getSourceIcon(src.type)} {src.name.length > 8 ? src.name.slice(0, 6) + '...' : src.name}
+                </button>
+              ))}
+              {sourceFilter.length > 0 && (
+                <button
+                  onClick={() => setSourceFilter([])}
+                  className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 underline"
+                >
+                  清除批次
                 </button>
               )}
             </>
@@ -434,6 +493,18 @@ export default function HomeView() {
                               </div>
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                              {pkg.currentCompareId && pkg.comparePairs && pkg.comparePairs.length > 0 && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    restoreLastCompare(pkg.id)
+                                  }}
+                                  className="btn-secondary text-xs bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800 hover:bg-purple-100 dark:hover:bg-purple-900/30"
+                                  title="恢复上次对比视图"
+                                >
+                                  ⚖️ 续看对比
+                                </button>
+                              )}
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -522,21 +593,68 @@ export default function HomeView() {
 
                         {pkgExpanded && pkg.sources && pkg.sources.length > 0 && (
                           <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700/20 p-3 space-y-2">
-                            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2 flex items-center gap-2">
-                              📦 导入批次（{pkg.sources.length}）
+                            <div className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2 flex items-center justify-between">
+                              <span className="flex items-center gap-2">
+                                📦 导入批次（{pkg.sources.length}）
+                                {(pkg.selectedSourceIds || []).length > 0 && (
+                                  <span className="tag tag-success text-[10px]">
+                                    已选 {(pkg.selectedSourceIds || []).length} 批
+                                  </span>
+                                )}
+                              </span>
+                              {pkg.sources.length > 1 && (
+                                <div className="flex items-center gap-2">
+                                  {(pkg.selectedSourceIds || []).length === pkg.sources.length ? (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        pkg.sources.forEach((s) => toggleSourceSelected(pkg.id, s.id))
+                                      }}
+                                      className="text-[10px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 underline"
+                                    >
+                                      取消全选
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        pkg.sources.forEach((s) => {
+                                          if (!(pkg.selectedSourceIds || []).includes(s.id)) {
+                                            toggleSourceSelected(pkg.id, s.id)
+                                          }
+                                        })
+                                      }}
+                                      className="text-[10px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 underline"
+                                    >
+                                      全选
+                                    </button>
+                                  )}
+                                </div>
+                              )}
                             </div>
                             {pkg.sources.map((src) => {
                               const srcExpanded = expandedSourceIds.has(src.id)
                               const editingKey = `${pkg.id}::${src.id}`
                               const isEditing = editingSourceId === editingKey
-                              const srcEntryCount = src.files.reduce((s, f) => s + (f.entryCount || f.entries?.length || 0), 0)
+                              const isSelected = (pkg.selectedSourceIds || []).includes(src.id)
+                              const srcEntryCount = src.files.reduce((s, f) => s + (f.entryCount || 0), 0)
                               return (
-                                <div key={src.id} className="rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800">
+                                <div key={src.id} className={`rounded border bg-white dark:bg-gray-800 transition-colors ${isSelected ? 'border-green-400 dark:border-green-600 ring-1 ring-green-200 dark:ring-green-900' : 'border-gray-200 dark:border-gray-600'}`}>
                                   <div className="flex items-center justify-between px-3 py-2">
                                     <div
                                       className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer"
                                       onClick={() => toggleSourceExpand(src.id)}
                                     >
+                                      <input
+                                        type="checkbox"
+                                        checked={isSelected}
+                                        onChange={(e) => {
+                                          e.stopPropagation()
+                                          toggleSourceSelected(pkg.id, src.id)
+                                        }}
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500 cursor-pointer"
+                                      />
                                       <span className="text-gray-400 text-xs w-3 text-center">
                                         {srcExpanded ? '▼' : '▶'}
                                       </span>

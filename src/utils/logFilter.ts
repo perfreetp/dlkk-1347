@@ -61,6 +61,12 @@ export function filterLogs(entries: LogEntry[], options: FilterOptions): LogEntr
       options.tagFilter!.some(tag => e.tags.includes(tag))
     )
   }
+
+  if (options.sourceFilter && options.sourceFilter.length > 0) {
+    filtered = filtered.filter(e =>
+      e.sourceId && options.sourceFilter!.includes(e.sourceId)
+    )
+  }
   
   return filtered
 }

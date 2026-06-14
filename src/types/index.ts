@@ -32,6 +32,7 @@ export interface LogEntry {
   sourceFile?: string
   tags: string[]
   isStarred: boolean
+  sourceId?: string
 }
 
 export interface LogFile {
@@ -44,7 +45,10 @@ export interface LogFile {
   encoding?: string
   entryCount?: number
   timeRange?: { start: number; end: number }
+  sourceId?: string
 }
+
+export type RightPanelType = 'detail' | 'timeline' | 'aggregation' | 'compare'
 
 export interface LogPackage {
   id: string
@@ -59,6 +63,15 @@ export interface LogPackage {
   sources?: ImportSource[]
   comparePairs?: ComparePair[]
   currentCompareId?: string | null
+  selectedSourceIds?: string[]
+  uiState?: {
+    rightPanel?: RightPanelType
+    showContext?: boolean
+    contextSize?: number
+    selectedEntryId?: string | null
+    compareEntryId?: string | null
+    compareMode?: 'idle' | 'selectA' | 'selectB'
+  }
 }
 
 export interface FilterOptions {
@@ -73,6 +86,7 @@ export interface FilterOptions {
   caseSensitive: boolean
   onlyStarred?: boolean
   tagFilter?: string[]
+  sourceFilter?: string[]
 }
 
 export interface AggregatedError {

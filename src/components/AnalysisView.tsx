@@ -1,12 +1,20 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useLogStore, useCurrentPackage, useAllEntries } from '../store/useLogStore'
 import { filterLogs, getContextEntries, searchHighlights, getUniqueValues } from '../utils/logFilter'
-import type { LogEntry, LogLevel } from '../types'
+import type { LogEntry, LogLevel, RightPanelType, ImportSource } from '../types'
 import LogDetailPanel from './LogDetailPanel'
 import TimelineView from './TimelineView'
 import ErrorAggregationView from './ErrorAggregationView'
 
-type RightPanel = 'detail' | 'timeline' | 'aggregation' | 'compare'
+const getSourceIcon = (type: string) => {
+  switch (type) {
+    case 'directory': return '📁'
+    case 'zip': return '📦'
+    case 'file': return '📄'
+    case 'clipboard': return '📋'
+    default: return '📄'
+  }
+}
 
 export default function AnalysisView() {
   const currentPkg = useCurrentPackage()
@@ -24,16 +32,33 @@ export default function AnalysisView() {
     addComparePair,
     removeComparePair,
     setCurrentCompare,
+    updateUiState,
   } = useLogStore()
 
-  const [rightPanel, setRightPanel] = useState<RightPanel>('detail')
+  const [rightPanel, setRightPanel] = useState<RightPanelType>('detail')
   const [showContext, setShowContext] = useState(false)
   const [contextSize, setContextSize] = useState(10)
   const [compareMode, setCompareMode] = useState<'idle' | 'selectA' | 'selectB'>('idle')
   const [compareEntryId, setCompareEntryId] = useState<string | null>(null)
   const [allTags, setAllTags] = useState<string[]>([])
+  const [hasInitialized, setHasInitialized] = useState(false)
 
   const logContainerRef = useRef<HTMLDivElement>(null)
+  const currentPkgId = currentPkg?.id
+
+  const packageSources = useMemo(() => currentPkg?.sources || [], [currentPkg])
+
+  const saveUiState = useCallback(() => {
+    if (!currentPkgId) return
+    updateUiState(currentPkgId, {
+      rightPanel,
+      showContext,
+      contextSize,
+      selectedEntryId,
+      compareEntryId,
+      compareMode,
+    })
+  }, [currentPkgId, rightPanel, showContext, contextSize, selectedEntryId, compareEntryId, compareMode, updateUiState])
 
   useEffect(() => {
     const tagSet = new Set<string>()
@@ -46,9 +71,25 @@ export default function AnalysisView() {
   }, [currentPkg])
 
   useEffect(() => {
-    if (!currentPkg) return
-    // 打开日志包时恢复上次的对比视图
-    if (currentPkg.currentCompareId) {
+    if (!currentPkg) {
+      setHasInitialized(false)
+      return
+    }
+    if (hasInitialized) return
+    setHasInitialized(true)
+
+    const uiState = currentPkg.uiState
+
+    if (uiState) {
+      if (uiState.rightPanel) setRightPanel(uiState.rightPanel)
+      if (uiState.showContext !== undefined) setShowContext(uiState.showContext)
+      if (uiState.contextSize !== undefined) setContextSize(uiState.contextSize)
+      if (uiState.compareMode) setCompareMode(uiState.compareMode)
+      if (uiState.compareEntryId !== undefined) setCompareEntryId(uiState.compareEntryId)
+      if (uiState.selectedEntryId && !selectedEntryId) {
+        setSelectedEntry(uiState.selectedEntryId)
+      }
+    } else if (currentPkg.currentCompareId) {
       const pair = (currentPkg.comparePairs || []).find((p) => p.id === currentPkg.currentCompareId)
       if (pair) {
         setRightPanel('compare')
@@ -60,7 +101,7 @@ export default function AnalysisView() {
         return
       }
     }
-    // 若有全局选中的 entry 则定位过去
+
     if (selectedEntryId) {
       setTimeout(() => {
         const el = document.getElementById(`log-entry-${selectedEntryId}`)
@@ -68,7 +109,15 @@ export default function AnalysisView() {
       }, 100)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPkg?.id])
+  }, [currentPkgId])
+
+  useEffect(() => {
+    if (!currentPkgId || !hasInitialized) return
+    const timer = setTimeout(() => {
+      saveUiState()
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [saveUiState, currentPkgId, hasInitialized])
 
   useEffect(() => {
     if (rightPanel === 'compare' && currentPkg?.currentCompareId) {
@@ -126,6 +175,14 @@ export default function AnalysisView() {
       ? levels.filter((l) => l !== level)
       : [...levels, level]
     updateFilter({ levels: newLevels })
+  }
+
+  const toggleSourceFilter = (sourceId: string) => {
+    const current = filterOptions.sourceFilter || []
+    const next = current.includes(sourceId)
+      ? current.filter((id) => id !== sourceId)
+      : [...current, sourceId]
+    updateFilter({ sourceFilter: next })
   }
   
   const handleEntryClick = (entry: LogEntry) => {
@@ -328,7 +385,7 @@ export default function AnalysisView() {
               {currentPkg.name}
             </h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              {currentPkg.project} · {currentPkg.version} · {allEntries.length.toLocaleString()} 条日志
+              {currentPkg.project} · {currentPkg.version} · {currentPkg.files.reduce((s, f) => s + (f.entryCount || 0), 0).toLocaleString()} 条日志
             </p>
           </div>
           
@@ -439,12 +496,44 @@ export default function AnalysisView() {
               ))}
             </>
           )}
+
+          {packageSources.length > 0 && (
+            <>
+              <div className="w-px h-5 bg-gray-300 dark:bg-gray-600 mx-2"></div>
+              <span className="text-sm text-gray-500 dark:text-gray-400">批次：</span>
+              {packageSources.map((src) => {
+                const srcCount = src.files.reduce((s, f) => s + (f.entryCount || 0), 0)
+                return (
+                  <button
+                    key={src.id}
+                    onClick={() => toggleSourceFilter(src.id)}
+                    className={`tag cursor-pointer transition-colors ${
+                      (filterOptions.sourceFilter || []).includes(src.id)
+                        ? 'tag-success ring-2 ring-offset-1 ring-green-400'
+                        : 'tag-debug opacity-50 hover:opacity-100'
+                    }`}
+                    title={`${src.name} · ${srcCount.toLocaleString()} 条${src.remark ? ' · ' + src.remark : ''}`}
+                  >
+                    {getSourceIcon(src.type)} {src.name.length > 10 ? src.name.slice(0, 8) + '...' : src.name}
+                  </button>
+                )
+              })}
+              {(filterOptions.sourceFilter || []).length > 0 && (
+                <button
+                  onClick={() => updateFilter({ sourceFilter: [] })}
+                  className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 underline"
+                >
+                  清除批次
+                </button>
+              )}
+            </>
+          )}
           
           <div className="w-px h-5 bg-gray-300 dark:bg-gray-600 mx-2"></div>
           
           <span className="text-sm text-gray-500 dark:text-gray-400">显示：</span>
           <span className="text-sm text-gray-600 dark:text-gray-400">
-            {filteredEntries.length.toLocaleString()} / {allEntries.length.toLocaleString()}
+            {filteredEntries.length.toLocaleString()} / {currentPkg.files.reduce((s, f) => s + (f.entryCount || 0), 0).toLocaleString()}
           </span>
         </div>
       </div>
